@@ -11,6 +11,8 @@ import soundfile as sf # Use soundfile to handle audio
 
 # --- Dependencies Check and Import ---
 try:
+    # Import necessary classes from both libraries
+    from parler_tts import ParlerTTSForConditionalGeneration
     from transformers import AutoTokenizer, AutoModelForTextToWaveform, PreTrainedTokenizer, PreTrainedModel
 except ImportError:
     # Configure basic logging *before* logging the error
@@ -28,6 +30,11 @@ MODEL_ID = os.getenv("MODEL_ID", DEFAULT_MODEL_ID) # Use generic MODEL_ID
 HOST = os.getenv("FLASK_HOST", "127.0.0.1") # Default to localhost
 PORT = int(os.getenv("FLASK_PORT", "3003")) # Default port
 MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000")) # Default limit
+# Re-introduce default description for Parler-TTS compatibility
+DEFAULT_DESCRIPTION = os.getenv(
+    "DEFAULT_DESCRIPTION",
+    "A female speaker delivers a slightly expressive and animated speech. The recording is of very high quality."
+)
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -74,12 +81,24 @@ def load_model() -> None:
         app.logger.warning(f"Forcing data type: {dtype} for model loading (prioritizing stability).")
 
         app.logger.info(f"Loading model '{MODEL_ID}' with dtype {dtype} onto device '{device}'...")
-        # Use AutoModelForTextToWaveform for broader compatibility
-        model = AutoModelForTextToWaveform.from_pretrained(
-            MODEL_ID,
-            torch_dtype=dtype # Use the forced dtype
-        ).to(device)
+
+        # Load tokenizer first (common for both)
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+
+        # Conditional model loading based on MODEL_ID
+        if "parler-tts" in MODEL_ID.lower():
+            app.logger.info("Detected Parler-TTS model type. Loading with ParlerTTSForConditionalGeneration.")
+            model = ParlerTTSForConditionalGeneration.from_pretrained(
+                MODEL_ID,
+                torch_dtype=dtype
+            ).to(device)
+        else:
+            app.logger.info("Detected generic TTS model type. Loading with AutoModelForTextToWaveform.")
+            # Use AutoModelForTextToWaveform for other models
+            model = AutoModelForTextToWaveform.from_pretrained(
+                MODEL_ID,
+                torch_dtype=dtype
+            ).to(device)
 
         model.eval()
 
@@ -96,7 +115,7 @@ def load_model() -> None:
 def synthesize() -> Union[Tuple[Response, int], Response]:
     """
     API endpoint to synthesize speech from text.
-    Expects a JSON payload with 'text'.
+    Expects a JSON payload with 'text' and optionally 'description' (required for Parler-TTS).
     Returns a WAV audio file or a JSON error message.
     """
     if model is None or tokenizer is None:
@@ -113,7 +132,15 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
          return jsonify({"error": "Empty JSON payload received"}), 400
 
     text_to_speak: Optional[str] = data.get('text')
-    # Removed description handling
+    # Get description, using default only if it's a Parler model
+    description: Optional[str] = data.get('description')
+    is_parler = isinstance(model, ParlerTTSForConditionalGeneration)
+    if is_parler and not description:
+        description = DEFAULT_DESCRIPTION
+        app.logger.info(f"No description provided for Parler-TTS model, using default: '{description[:50]}...'")
+    elif description:
+         app.logger.info(f"Using provided description: '{description[:50]}...'")
+
 
     if not text_to_speak or not isinstance(text_to_speak, str):
         app.logger.warning("Missing or invalid 'text' parameter in request.")
@@ -123,31 +150,54 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
         app.logger.warning(f"Input text length ({len(text_to_speak)}) exceeds limit ({MAX_TEXT_LENGTH}).")
         return jsonify({"error": f"Input text exceeds maximum length of {MAX_TEXT_LENGTH} characters"}), 413 # Payload Too Large
 
-    app.logger.info(f"Received synthesis request. Text length: {len(text_to_speak)}.")
+    log_desc = f" Description: '{description[:50]}...'" if description else ""
+    app.logger.info(f"Received synthesis request. Text length: {len(text_to_speak)}.{log_desc}")
     # Log only the start of the text for brevity and potential privacy
     app.logger.debug(f"Full text: '{text_to_speak}'")
 
     try:
         # Ensure tokenizer and model are available (checked earlier, but helps static analysis)
         assert tokenizer is not None and model is not None and device is not None
-        app.logger.debug("Tokenizing input text...")
-        # Tokenize the input text
-        inputs = tokenizer(text_to_speak, return_tensors="pt").to(device)
-        input_ids = inputs.input_ids
-        # Note: Some models might need attention_mask, others might not.
-        # AutoModel should handle this, but be aware if issues arise with specific models.
-        app.logger.debug(f"Input IDs shape: {input_ids.shape}")
 
         app.logger.info("Starting audio generation...")
-        # Use the standard generate method for text-to-waveform models
-        # Generation parameters can be passed here if needed (e.g., speaker_embeddings for multi-speaker models)
-        # Consult the specific model's documentation for available generation options.
         with torch.no_grad(): # Ensure gradients are not computed
-            # Use generate directly with input_ids
-            output = model.generate(input_ids=input_ids)
-            # The output structure might vary slightly; typically the waveform is the first element
-            # Assuming the primary output is the waveform tensor
-            waveform = output.waveform if hasattr(output, 'waveform') else output[0]
+            if is_parler:
+                # Parler-TTS specific generation
+                assert description is not None # Should have default if not provided
+                app.logger.debug("Tokenizing description and prompt for Parler-TTS...")
+                description_tokens = tokenizer(description, return_tensors="pt").to(device)
+                prompt_tokens = tokenizer(text_to_speak, return_tensors="pt").to(device)
+
+                app.logger.debug(f"Parler Description input_ids shape: {description_tokens.input_ids.shape}")
+                app.logger.debug(f"Parler Prompt input_ids shape: {prompt_tokens.input_ids.shape}")
+
+                # Generate audio using Parler-TTS method
+                output = model.generate(
+                    input_ids=description_tokens.input_ids,
+                    prompt_input_ids=prompt_tokens.input_ids,
+                    attention_mask=description_tokens.attention_mask # Pass description's attention mask
+                ).to(device) # Ensure output is on correct device
+                waveform = output # Parler output is directly the waveform tensor
+
+            else:
+                # Generic AutoModel generation
+                app.logger.debug("Tokenizing input text for generic model...")
+                inputs = tokenizer(text_to_speak, return_tensors="pt").to(device)
+                app.logger.debug(f"Generic Input IDs shape: {inputs.input_ids.shape}")
+
+                # Use the standard generate method
+                output = model.generate(**inputs) # Pass tokenized inputs directly
+                # Extract waveform (structure might vary, common patterns checked)
+                if hasattr(output, 'waveform'):
+                    waveform = output.waveform
+                elif hasattr(output, 'audio'): # Some models might use 'audio'
+                     waveform = output.audio
+                elif isinstance(output, torch.Tensor): # If output is just the tensor
+                     waveform = output
+                else: # Fallback if structure is unknown
+                     waveform = output[0]
+                     app.logger.warning("Could not determine waveform tensor structure reliably from model output.")
+
 
         app.logger.info("Audio generation finished.")
 
@@ -206,7 +256,9 @@ if __name__ == '__main__':
         app.logger.info(f"Device: {device}") # Device is set in load_model
         app.logger.info(f"Model Data Type: {model.dtype if model else 'N/A'}") # Log the actual dtype used
         app.logger.info(f"Max Text Length: {MAX_TEXT_LENGTH}")
-        # Removed Default Description logging
+        # Check model type *after* loading for logging purposes
+        if isinstance(model, ParlerTTSForConditionalGeneration):
+            app.logger.info(f"Default Description (for Parler): {DEFAULT_DESCRIPTION}")
         app.logger.info(f"Running Flask server on http://{HOST}:{PORT}")
         app.logger.info("-----------------------------")
 

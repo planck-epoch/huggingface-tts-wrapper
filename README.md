@@ -46,7 +46,7 @@ The application uses environment variables for configuration. You can set these 
 *   `FLASK_HOST`: The host address for the Flask server. Defaults to `127.0.0.1`.
 *   `FLASK_PORT`: The port for the Flask server. Defaults to `3003`.
 *   `MAX_TEXT_LENGTH`: Maximum number of characters allowed in the input text. Defaults to `1000`.
-# Removed DEFAULT_DESCRIPTION
+*   `DEFAULT_DESCRIPTION`: The default speaker description/prompt to use if none is provided in the request (primarily for Parler-TTS models).
 
 ## API Usage
 
@@ -57,10 +57,11 @@ The application uses environment variables for configuration. You can set these 
 *   **Request Body:**
     ```json
     {
-      "text": "The text you want to convert to speech."
+      "text": "The text you want to convert to speech.",
+      "description": "Optional: A description of the desired voice characteristics (e.g., 'A female speaker with a clear voice.'). This is required by some models like Parler-TTS. If omitted and the loaded model is Parler-TTS, the `DEFAULT_DESCRIPTION` from the configuration is used."
     }
     ```
-    *Note: Some models might support additional parameters like speaker embeddings. Check the specific model's documentation on Hugging Face.*
+    *Note: Check the specific model's documentation on Hugging Face for required/optional parameters.*
 *   **Success Response:**
     *   **Code:** `200 OK`
     *   **Content-Type:** `audio/wav`
@@ -74,12 +75,19 @@ The application uses environment variables for configuration. You can set these 
 ### Example Request (using `curl`):
 
 ```bash
+# Example for Parler-TTS (requires description)
 curl -X POST http://127.0.0.1:3003/synthesize \
      -H "Content-Type: application/json" \
-     -d '{"text": "Hello world, this is a test."}' \
-     --output output.wav
+     -d '{"text": "Hello world, this is a test.", "description": "A calm male voice."}' \
+     --output output_parler.wav
+
+# Example for a model not requiring description (like MMS)
+# curl -X POST http://127.0.0.1:3003/synthesize \
+#      -H "Content-Type: application/json" \
+#      -d '{"text": "Hello world, this is a test."}' \
+#      --output output_generic.wav
 ```
-This command sends a request to the server and saves the resulting audio to `output.wav`.
+These commands send requests to the server and save the resulting audio.
 
 ## Running the Server
 
