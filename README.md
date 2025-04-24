@@ -1,13 +1,18 @@
-# Hugging Face TTS API Wrapper
+# Hugging Face TTS API Wrappers
 
-A simple Flask-based API wrapper to serve Text-to-Speech (TTS) models from the Hugging Face Hub.
+A project providing simple Flask-based API wrappers to serve specific Text-to-Speech (TTS) models from the Hugging Face ecosystem. This project now contains two separate applications: one for Parler-TTS and one for Dia-TTS.
 
 ## Features
 
-*   Provides a `/synthesize` endpoint to generate speech from text.
-*   Configurable TTS model via environment variables.
-*   Supports different compute devices (CUDA, MPS, CPU).
-*   Handles basic error checking and logging.
+*   **`app-parler-tts.py`**: Serves the `parler-tts/parler-tts-mini-v1.1` model.
+    *   Provides a `/synthesize` endpoint requiring `text` and `description`.
+    *   Runs on port 3004 by default (configurable via `FLASK_PORT_PARLER`).
+*   **`app-dia-tts.py`**: Serves the `nari-labs/Dia-1.6B` model.
+    *   Provides a `/synthesize` endpoint requiring `text`.
+    *   Runs on port 3005 by default (configurable via `FLASK_PORT_DIA`).
+*   Configurable host, ports, and text limits via environment variables.
+*   Supports different compute devices (CUDA, CPU, with MPS forced to CPU for compatibility).
+*   Handles basic error checking and logging for each application.
 
 ## Setup
 
@@ -29,28 +34,31 @@ A simple Flask-based API wrapper to serve Text-to-Speech (TTS) models from the H
     ```bash
     pip install -r requirements.txt
     ```
-    *Note: `parler-tts` is installed directly from GitHub via the requirements file.*
+    *Note: `parler-tts` and `dia-tts` dependencies are installed directly from GitHub via the requirements file.*
 
-4.  **Configure the model (Optional):**
+4.  **Configure Environment Variables (Optional):**
     Create a `.env` file in the project root directory by copying the example:
     ```bash
     cp .env.example .env
     ```
-    Edit the `.env` file to specify the Hugging Face model ID you want to use.
+    Edit the `.env` file to customize ports, host, etc. (see Configuration section below). The specific model for each app is now hardcoded.
 
 ## Configuration
 
-The application uses environment variables for configuration. You can set these in a `.env` file or directly in your environment.
+The applications use environment variables for configuration. You can set these in a `.env` file or directly in your environment.
 
-*   `MODEL_ID`: The Hugging Face model identifier for the TTS model (e.g., `parler-tts/parler-tts-mini-v1.1`, `nari-labs/dia`). Defaults to `parler-tts/parler-tts-mini-v1.1`.
-*   `FLASK_HOST`: The host address for the Flask server. Defaults to `127.0.0.1`.
-*   `FLASK_PORT`: The port for the Flask server. Defaults to `3003`.
-*   `MAX_TEXT_LENGTH`: Maximum number of characters allowed in the input text. Defaults to `1000`.
-*   `DEFAULT_DESCRIPTION`: The default speaker description/prompt to use if none is provided in the request (primarily for Parler-TTS models).
+*   `FLASK_HOST`: The host address for the Flask servers. Defaults to `127.0.0.1`.
+*   `FLASK_PORT_PARLER`: The port for the Parler-TTS Flask server. Defaults to `3004`.
+*   `FLASK_PORT_DIA`: The port for the Dia-TTS Flask server. Defaults to `3005`.
+*   `MAX_TEXT_LENGTH`: Maximum number of characters allowed in the input text for both apps. Defaults to `1000`.
+*   `DEFAULT_DESCRIPTION`: The default speaker description/prompt to use for Parler-TTS if none is provided in the request.
+*   `TORCH_DEVICE`: (Optional) Force a specific device (e.g., "cuda", "cpu"). If commented out or empty, the script will attempt auto-detection (CUDA > CPU). MPS is detected but CPU is forced due to compatibility issues.
 
 ## API Usage
 
-### Endpoint: `/synthesize`
+Each application runs on a different port.
+
+### Parler-TTS (`app-parler-tts.py`) Endpoint: `/synthesize`
 
 *   **Method:** `POST`
 *   **Content-Type:** `application/json`
@@ -58,44 +66,67 @@ The application uses environment variables for configuration. You can set these 
     ```json
     {
       "text": "The text you want to convert to speech.",
-      "description": "Optional: A description of the desired voice characteristics (e.g., 'A female speaker with a clear voice.'). This is required by some models like Parler-TTS. If omitted and the loaded model is Parler-TTS, the `DEFAULT_DESCRIPTION` from the configuration is used."
+      "description": "A description of the desired voice characteristics (e.g., 'A female speaker with a clear voice.'). If omitted, the `DEFAULT_DESCRIPTION` from the configuration is used."
     }
     ```
-    *Note: Check the specific model's documentation on Hugging Face for required/optional parameters.*
 *   **Success Response:**
     *   **Code:** `200 OK`
     *   **Content-Type:** `audio/wav`
     *   **Body:** The raw WAV audio data.
-*   **Error Responses:**
-    *   `400 Bad Request`: Invalid JSON format, missing 'text', or invalid 'text' type.
-    *   `413 Payload Too Large`: Input 'text' exceeds `MAX_TEXT_LENGTH`.
-    *   `500 Internal Server Error`: Error during synthesis process.
-    *   `503 Service Unavailable`: Model is not loaded or ready.
 
-### Example Request (using `curl`):
+### Dia-TTS (`app-dia-tts.py`) Endpoint: `/synthesize`
+
+*   **Method:** `POST`
+*   **Content-Type:** `application/json`
+*   **Request Body:**
+    ```json
+    {
+      "text": "[S1] Dia is an open weights text to dialogue model. [S2] You get full control over scripts and voices. [S1] Wow. Amazing. (laughs) [S2] Try it now on Git hub or Hugging Face."
+    }
+    ```
+    *Note: Dia-TTS expects specific formatting for dialogue turns (e.g., `[S1]`, `[S2]`).*
+*   **Success Response:**
+    *   **Code:** `200 OK`
+    *   **Content-Type:** `audio/wav`
+    *   **Body:** The raw WAV audio data (at 44100 Hz).
+
+### Error Responses (Both Apps):
+
+*   `400 Bad Request`: Invalid JSON format, missing required parameters, or invalid parameter types.
+*   `413 Payload Too Large`: Input 'text' exceeds `MAX_TEXT_LENGTH`.
+*   `500 Internal Server Error`: Error during synthesis process.
+*   `503 Service Unavailable`: Model is not loaded or ready.
+
+### Example Requests (using `curl`):
 
 ```bash
-# Example for Parler-TTS (requires description)
-curl -X POST http://127.0.0.1:3003/synthesize \
+# Example for Parler-TTS (runs on port 3004 by default)
+curl -X POST http://127.0.0.1:3004/synthesize \
      -H "Content-Type: application/json" \
-     -d '{"text": "Hello world, this is a test.", "description": "A calm male voice."}' \
+     -d '{"text": "Hello world, this is a Parler-TTS test.", "description": "A calm male voice."}' \
      --output output_parler.wav
 
-# Example for a model not requiring description (like MMS)
-# curl -X POST http://127.0.0.1:3003/synthesize \
-#      -H "Content-Type: application/json" \
-#      -d '{"text": "Hello world, this is a test."}' \
-#      --output output_generic.wav
+# Example for Dia-TTS (runs on port 3005 by default)
+curl -X POST http://127.0.0.1:3005/synthesize \
+     -H "Content-Type: application/json" \
+     -d '{"text": "[S1] This is speaker one testing Dia TTS. [S2] And this is speaker two responding."}' \
+     --output output_dia.wav
 ```
-These commands send requests to the server and save the resulting audio.
+These commands send requests to the respective servers and save the resulting audio.
 
-## Running the Server
+## Running the Servers
 
+You need to run each application in a separate terminal process.
+
+**Terminal 1 (Parler-TTS):**
 ```bash
-python app.py
+python app-parler-tts.py
 ```
-The server will start, load the configured model, and listen for requests on the specified host and port.
+The server will start, load the Parler-TTS model, and listen on the port specified by `FLASK_PORT_PARLER` (default 3004).
 
-## License
+**Terminal 2 (Dia-TTS):**
+```bash
+python app-dia-tts.py
+```
+The server will start, load the Dia-TTS model, and listen on the port specified by `FLASK_PORT_DIA` (default 3005).
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
