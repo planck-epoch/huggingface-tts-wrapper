@@ -7,30 +7,27 @@ from typing import Optional, Tuple, Dict, Any, Union
 from flask import Flask, request, send_file, jsonify, Response
 from dotenv import load_dotenv
 import torch
-import soundfile as sf # Use soundfile to handle audio
+import soundfile as sf
 
 # --- Dependencies Check and Import ---
 try:
-    # Import necessary classes from both libraries
     from parler_tts import ParlerTTSForConditionalGeneration
     from transformers import AutoTokenizer, AutoModelForTextToWaveform, PreTrainedTokenizer, PreTrainedModel
 except ImportError:
-    # Configure basic logging *before* logging the error
     logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
     logging.error("Required libraries not found. Please ensure transformers, torch, etc. are installed.")
     logging.error("Install instructions: pip install -r requirements.txt")
-    exit(1) # Exit if crucial libraries are missing
+    exit(1)
 
 # --- Configuration ---
-load_dotenv() # Load environment variables from .env file if present
+load_dotenv()
 
-DEFAULT_MODEL_ID = "parler-tts/parler-tts-mini-v1.1" # Default if not set in .env
-MODEL_ID = os.getenv("MODEL_ID", DEFAULT_MODEL_ID) # Use generic MODEL_ID
+DEFAULT_MODEL_ID = "parler-tts/parler-tts-mini-v1.1" 
+MODEL_ID = os.getenv("MODEL_ID", DEFAULT_MODEL_ID)
 
-HOST = os.getenv("FLASK_HOST", "127.0.0.1") # Default to localhost
-PORT = int(os.getenv("FLASK_PORT", "3003")) # Default port
-MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000")) # Default limit
-# Re-introduce default description for Parler-TTS compatibility
+HOST = os.getenv("FLASK_HOST", "127.0.0.1")
+PORT = int(os.getenv("FLASK_PORT", "3003"))
+MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000"))
 DEFAULT_DESCRIPTION = os.getenv(
     "DEFAULT_DESCRIPTION",
     "A female speaker delivers a slightly expressive and animated speech. The recording is of very high quality."
@@ -38,7 +35,6 @@ DEFAULT_DESCRIPTION = os.getenv(
 
 # --- Flask App Setup ---
 app = Flask(__name__)
-# Configure Flask's logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 # Make sure Flask logger uses the configured settings
 app.logger.setLevel(logging.INFO)
@@ -70,22 +66,23 @@ def load_model() -> None:
             app.logger.info(f"Using forced device from TORCH_DEVICE: {device}")
         elif torch.cuda.is_available():
             device = torch.device("cuda")
-        elif torch.backends.mps.is_available(): # Check for Apple Metal Performance Shaders
-             device = torch.device("mps")
-             app.logger.info("MPS device detected.")
+        elif torch.backends.mps.is_available():
+             # Force CPU even if MPS is available due to potential compatibility issues
+             # like "Output channels > 65536 not supported at the MPS device."
+             device = torch.device("cpu")
+             app.logger.warning("MPS device detected, but forcing CPU due to potential compatibility issues.")
+             # device = torch.device("mps")
+             # app.logger.info("MPS device detected.")
         else:
             device = torch.device("cpu")
 
-        # Always use float32 for potentially better stability, especially on MPS.
         dtype = torch.float32
         app.logger.warning(f"Forcing data type: {dtype} for model loading (prioritizing stability).")
 
         app.logger.info(f"Loading model '{MODEL_ID}' with dtype {dtype} onto device '{device}'...")
 
-        # Load tokenizer first (common for both)
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
-        # Conditional model loading based on MODEL_ID
         if "parler-tts" in MODEL_ID.lower():
             app.logger.info("Detected Parler-TTS model type. Loading with ParlerTTSForConditionalGeneration.")
             model = ParlerTTSForConditionalGeneration.from_pretrained(
@@ -106,7 +103,6 @@ def load_model() -> None:
 
     except Exception as e:
         app.logger.error(f"Fatal error loading TTS model: {e}", exc_info=True)
-        # Re-raise the exception to be caught by the main block
         raise RuntimeError(f"Failed to load TTS model '{MODEL_ID}': {e}")
 
 
@@ -132,7 +128,6 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
          return jsonify({"error": "Empty JSON payload received"}), 400
 
     text_to_speak: Optional[str] = data.get('text')
-    # Get description, using default only if it's a Parler model
     description: Optional[str] = data.get('description')
     is_parler = isinstance(model, ParlerTTSForConditionalGeneration)
     if is_parler and not description:
@@ -152,17 +147,14 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
 
     log_desc = f" Description: '{description[:50]}...'" if description else ""
     app.logger.info(f"Received synthesis request. Text length: {len(text_to_speak)}.{log_desc}")
-    # Log only the start of the text for brevity and potential privacy
     app.logger.debug(f"Full text: '{text_to_speak}'")
 
     try:
-        # Ensure tokenizer and model are available (checked earlier, but helps static analysis)
         assert tokenizer is not None and model is not None and device is not None
 
         app.logger.info("Starting audio generation...")
-        with torch.no_grad(): # Ensure gradients are not computed
+        with torch.no_grad():
             if is_parler:
-                # Parler-TTS specific generation
                 assert description is not None # Should have default if not provided
                 app.logger.debug("Tokenizing description and prompt for Parler-TTS...")
                 description_tokens = tokenizer(description, return_tensors="pt").to(device)
@@ -171,22 +163,19 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
                 app.logger.debug(f"Parler Description input_ids shape: {description_tokens.input_ids.shape}")
                 app.logger.debug(f"Parler Prompt input_ids shape: {prompt_tokens.input_ids.shape}")
 
-                # Generate audio using Parler-TTS method
                 output = model.generate(
                     input_ids=description_tokens.input_ids,
                     prompt_input_ids=prompt_tokens.input_ids,
-                    attention_mask=description_tokens.attention_mask # Pass description's attention mask
-                ).to(device) # Ensure output is on correct device
-                waveform = output # Parler output is directly the waveform tensor
+                    attention_mask=description_tokens.attention_mask
+                ).to(device) 
+                waveform = output
 
             else:
-                # Generic AutoModel generation
                 app.logger.debug("Tokenizing input text for generic model...")
                 inputs = tokenizer(text_to_speak, return_tensors="pt").to(device)
                 app.logger.debug(f"Generic Input IDs shape: {inputs.input_ids.shape}")
 
-                # Use the standard generate method
-                output = model.generate(**inputs) # Pass tokenized inputs directly
+                output = model.generate(**inputs) 
                 # Extract waveform (structure might vary, common patterns checked)
                 if hasattr(output, 'waveform'):
                     waveform = output.waveform
@@ -201,13 +190,10 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
 
         app.logger.info("Audio generation finished.")
 
-        # Move generated tensor to CPU *before* NumPy conversion, ensure float32 for soundfile
         app.logger.debug(f"Moving generated waveform tensor (shape: {waveform.shape}, dtype: {waveform.dtype}) to CPU...")
-        # Squeeze potentially removes batch and channel dimensions if they are 1
         audio_arr = waveform.cpu().numpy().squeeze().astype("float32")
         app.logger.debug(f"Tensor moved to CPU and converted to NumPy array (shape: {audio_arr.shape}, dtype: {audio_arr.dtype}).")
 
-        # Check the stats of the array before writing to file
         min_val, max_val, mean_val = audio_arr.min(), audio_arr.max(), audio_arr.mean()
         app.logger.info(f"Audio array stats before saving - Min: {min_val:.4f}, Max: {max_val:.4f}, Mean: {mean_val:.4f}")
         if abs(min_val) > 1.0 or abs(max_val) > 1.0:
@@ -249,14 +235,12 @@ if __name__ == '__main__':
     try:
         # Load the model immediately on startup
         load_model()
-
-        # Log server configuration details
+        
         app.logger.info("--- Server Configuration ---")
         app.logger.info(f"Model ID: {MODEL_ID}")
         app.logger.info(f"Device: {device}") # Device is set in load_model
         app.logger.info(f"Model Data Type: {model.dtype if model else 'N/A'}") # Log the actual dtype used
         app.logger.info(f"Max Text Length: {MAX_TEXT_LENGTH}")
-        # Check model type *after* loading for logging purposes
         if isinstance(model, ParlerTTSForConditionalGeneration):
             app.logger.info(f"Default Description (for Parler): {DEFAULT_DESCRIPTION}")
         app.logger.info(f"Running Flask server on http://{HOST}:{PORT}")
@@ -269,10 +253,8 @@ if __name__ == '__main__':
         app.run(host=HOST, port=PORT, debug=False, threaded=True)
 
     except RuntimeError as e:
-        # Catch errors specifically from load_model
         app.logger.critical(f"Application startup failed during model loading: {e}", exc_info=False)
         exit(1)
     except Exception as e:
-        # Catch any other unexpected errors during startup
         app.logger.critical(f"An unexpected error occurred during application startup: {e}", exc_info=True)
         exit(1)
