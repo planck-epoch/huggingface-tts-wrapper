@@ -1,0 +1,12 @@
+Flask>=3.0.0
+python-dotenv
+transformers
+torch
+soundfile
+accelerate
+
+# Install parler-tts directly from GitHub
+git+https://github.com/huggingface/parler-tts.git
+
+# Install dia directly from GitHub
+git+https://github.com/nari-labs/dia.git
