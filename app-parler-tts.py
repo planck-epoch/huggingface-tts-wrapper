@@ -21,12 +21,8 @@ except ImportError:
 
 # --- Configuration ---
 load_dotenv()
-
-# Specific model for this application
 PARLER_MODEL_ID = "parler-tts/parler-tts-mini-v1.1"
-
 HOST = os.getenv("FLASK_HOST", "127.0.0.1")
-# Use a different default port for the Parler app, e.g., 3004
 PORT = int(os.getenv("FLASK_PORT_PARLER", "3004"))
 MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000"))
 DEFAULT_DESCRIPTION = os.getenv(
@@ -36,9 +32,7 @@ DEFAULT_DESCRIPTION = os.getenv(
 
 # --- Flask App Setup ---
 app = Flask(__name__)
-# Configure logging specifically for the Parler app
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s-parler - %(levelname)s - %(message)s')
-# Make sure Flask logger uses the configured settings
 app.logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s - %(name)s-parler - %(levelname)s - %(message)s')
@@ -83,7 +77,6 @@ def load_model() -> None:
 
         app.logger.info(f"Loading Parler-TTS model '{PARLER_MODEL_ID}' with dtype {dtype} onto device '{device}'...")
 
-        # Load tokenizer and model specifically for Parler-TTS
         tokenizer = AutoTokenizer.from_pretrained(PARLER_MODEL_ID)
         model = ParlerTTSForConditionalGeneration.from_pretrained(
             PARLER_MODEL_ID,
@@ -91,12 +84,10 @@ def load_model() -> None:
         ).to(device)
 
         model.eval()
-
         app.logger.info("Parler-TTS model and tokenizer loaded successfully.")
 
     except Exception as e:
         app.logger.error(f"Fatal error loading Parler-TTS model: {e}", exc_info=True)
-        # Re-raise the exception to be caught by the main block
         raise RuntimeError(f"Failed to load Parler-TTS model '{PARLER_MODEL_ID}': {e}")
 
 
@@ -163,8 +154,7 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
                     attention_mask=description_tokens.attention_mask
                 ).to(device)
                 waveform = output
-            # Removed the 'else' block for generic models as this app is Parler-specific
-
+           
         app.logger.info("Audio generation finished.")
 
         app.logger.debug(f"Moving generated waveform tensor (shape: {waveform.shape}, dtype: {waveform.dtype}) to CPU...")
@@ -182,8 +172,7 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
         except AttributeError:
             app.logger.warning("Could not automatically determine sampling rate from model config. Falling back to a default (e.g., 16000 Hz). This might be incorrect.")
             # Fallback or require configuration if needed. For now, let's assume 16kHz is a common default.
-            # A better approach might be to make this configurable or fail if not found.
-            sampling_rate = 16000 # Example fallback
+            sampling_rate = 16000
 
         app.logger.debug("Writing audio array to WAV buffer...")
         buffer = io.BytesIO()
@@ -210,15 +199,12 @@ def synthesize() -> Union[Tuple[Response, int], Response]:
 # --- Main Execution Block ---
 if __name__ == '__main__':
     try:
-        # Load the model immediately on startup
-        # Load the model immediately on startup
         load_model()
 
-        # Log server configuration details
         app.logger.info("--- Parler-TTS Server Configuration ---")
         app.logger.info(f"Model ID: {PARLER_MODEL_ID}")
-        app.logger.info(f"Device: {device}") # Device is set in load_model
-        app.logger.info(f"Model Data Type: {model.dtype if model else 'N/A'}") # Log the actual dtype used
+        app.logger.info(f"Device: {device}")
+        app.logger.info(f"Model Data Type: {model.dtype if model else 'N/A'}")
         app.logger.info(f"Max Text Length: {MAX_TEXT_LENGTH}")
         if isinstance(model, ParlerTTSForConditionalGeneration):
             app.logger.info(f"Default Description (for Parler): {DEFAULT_DESCRIPTION}")
